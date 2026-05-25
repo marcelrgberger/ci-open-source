@@ -60,7 +60,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Install fastlane
+    - name: Install fastlane (pinned)
       shell: bash
       run: |
         set -euo pipefail
@@ -71,11 +71,13 @@ runs:
         # 2.230.0 still sends the plain `DEVELOPER_ID_APPLICATION` form
         # that Apple accepts. Revisit the pin when fastlane ships a fix
         # that gates G2 behind an opt-in flag.
-        FASTLANE_VERSION="2.230.0"
-        if ! fastlane --version 2>/dev/null | grep -q "$FASTLANE_VERSION"; then
-          gem install fastlane --version "= $FASTLANE_VERSION" --no-document
-        fi
-        fastlane --version
+        #
+        # GitHub macOS runners ship fastlane pre-installed; we install
+        # 2.230.0 alongside and use the `_2.230.0_` gem version
+        # selector at every call site so the bin stub picks the
+        # pinned version regardless of what's already on PATH.
+        gem install fastlane --version "= 2.230.0" --no-document
+        fastlane _2.230.0_ --version
 
     - name: Run fastlane match
       shell: bash
@@ -124,7 +126,7 @@ runs:
         # `"${arr[@]:-}"` is the bash-3.2-safe array expansion under
         # `set -u` — plain `"${arr[@]}"` is treated as an unbound
         # variable reference when the array is empty.
-        fastlane match "$MATCH_TYPE" \
+        fastlane _2.230.0_ match "$MATCH_TYPE" \
           "${READONLY_FLAG[@]:-}" \
           --git_url "$MATCH_GIT_URL" \
           --app_identifier "$MATCH_APP_IDENTIFIERS" \
