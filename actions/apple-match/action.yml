@@ -64,11 +64,16 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        if ! command -v fastlane >/dev/null 2>&1; then
-          # macOS runners ship a recent enough Ruby; we pin fastlane to a
-          # known-good major. Bumping requires verifying that match's
-          # MAC_APP_DIRECT support is still present (it is, from 2.207+).
-          gem install fastlane --version "~> 2.220" --no-document
+        # Pin to a known-good fastlane release. Versions 2.232+ send
+        # `DEVELOPER_ID_APPLICATION_G2` to App Store Connect for
+        # `developer_id` certificate provisioning, which Apple's API
+        # currently rejects ("not a valid value for certificateType").
+        # 2.230.0 still sends the plain `DEVELOPER_ID_APPLICATION` form
+        # that Apple accepts. Revisit the pin when fastlane ships a fix
+        # that gates G2 behind an opt-in flag.
+        FASTLANE_VERSION="2.230.0"
+        if ! fastlane --version 2>/dev/null | grep -q "$FASTLANE_VERSION"; then
+          gem install fastlane --version "= $FASTLANE_VERSION" --no-document
         fi
         fastlane --version
 
