@@ -1,0 +1,167 @@
+name: Fetch Apple Certificates via fastlane match
+description: >
+  Reads Developer ID certificates and provisioning profiles from a private
+  fastlane match repository and installs them into the runner. Read-only by
+  default — cert and profile creation / rotation happens through a separate,
+  explicit `fastlane match` invocation (e.g. the bootstrap workflow inside
+  the match repo itself).
+
+inputs:
+  git-url:
+    description: >
+      Clone URL of the private match repository. SSH form
+      `git@github.com:owner/repo.git` is recommended — pair it with an
+      SSH agent started from a repo-scoped deploy key (see the
+      `release-macos-app.yml` reusable workflow for the canonical setup).
+      HTTPS form `https://x:<TOKEN>@github.com/owner/repo.git` is also
+      accepted; pass the token via a secret and never inline.
+    required: true
+  match-password:
+    description: The symmetric passphrase that encrypts the match repository contents.
+    required: true
+  type:
+    description: One of `developer_id`, `appstore`, `adhoc`, `development`, or `enterprise`.
+    required: false
+    default: developer_id
+  app-identifiers:
+    description: >
+      Comma-separated list of bundle IDs to provision. All of them must
+      already exist in App Store Connect (registered Bundle IDs).
+    required: true
+  team-id:
+    description: Apple Developer Team ID.
+    required: true
+  api-key-path:
+    description: Path to the ASC API .p8 file (typically the `key-path` output of `apple-asc-key`).
+    required: true
+  api-key-id:
+    description: ASC API Key ID.
+    required: true
+  api-issuer-id:
+    description: ASC API Issuer ID.
+    required: true
+  keychain-name:
+    description: >
+      Name of (or full path to) the keychain match should write the cert
+      into. Defaults to the login keychain. When you've created a
+      temporary build keychain via `apple-create-keychain`, pass that
+      action's `keychain-path` output here.
+    required: false
+    default: login
+  keychain-password:
+    description: >
+      Password used to unlock the keychain match writes the imported cert
+      into. Required when `keychain-name` is a freshly-created temporary
+      keychain — match also uses this to set the keychain item ACL so
+      codesign can use the identity without GUI prompts.
+    required: false
+    default: ""
+  readonly:
+    description: >
+      When `true` (default), runs `fastlane match --readonly` — match only
+      reads from the match repository and never creates or rotates artefacts.
+      Set to `false` for the bootstrap / rotation workflow that runs from
+      within the certificate repository itself.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Install fastlane (pinned)
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Pin to a known-good fastlane release. Versions 2.232+ send
+        # `DEVELOPER_ID_APPLICATION_G2` to App Store Connect for
+        # `developer_id` certificate provisioning, which Apple's API
+        # currently rejects ("not a valid value for certificateType").
+        # 2.230.0 still sends the plain `DEVELOPER_ID_APPLICATION` form
+        # that Apple accepts. Revisit the pin when fastlane ships a fix
+        # that gates G2 behind an opt-in flag.
+        #
+        # GitHub macOS runners ship fastlane pre-installed; we install
+        # 2.230.0 alongside and use the `_2.230.0_` gem version
+        # selector at every call site so the bin stub picks the
+        # pinned version regardless of what's already on PATH.
+        gem install fastlane --version "= 2.230.0" --no-document
+        fastlane _2.230.0_ --version
+
+        # Apple API workaround (May 2026): App Store Connect no longer
+        # accepts `DEVELOPER_ID_APPLICATION_G2` as a certificate type
+        # (see fastlane/fastlane#29587). Rename the constant value in
+        # spaceship/certificate.rb so every code path that reads it
+        # sends the still-accepted DEVELOPER_ID_APPLICATION form.
+        GEM_DIR="$(gem environment gemdir)/gems/fastlane-2.230.0"
+        CERT_MODEL="$GEM_DIR/spaceship/lib/spaceship/connect_api/models/certificate.rb"
+        if [ -f "$CERT_MODEL" ]; then
+          sed -i.bak 's/DEVELOPER_ID_APPLICATION_G2 = "DEVELOPER_ID_APPLICATION_G2"/DEVELOPER_ID_APPLICATION_G2 = "DEVELOPER_ID_APPLICATION"/' "$CERT_MODEL"
+          rm -f "${CERT_MODEL}.bak"
+        fi
+        # Also drop the G2 row from the cert/runner.rb candidate array
+        # (belt-and-braces).
+        RUNNER_FILE="$GEM_DIR/cert/lib/cert/runner.rb"
+        if [ -f "$RUNNER_FILE" ]; then
+          sed -i.bak '/CertificateType::DEVELOPER_ID_APPLICATION_G2,/d' "$RUNNER_FILE"
+          rm -f "${RUNNER_FILE}.bak"
+        fi
+
+    - name: Run fastlane match
+      shell: bash
+      env:
+        MATCH_GIT_URL: ${{ inputs.git-url }}
+        MATCH_PASSWORD: ${{ inputs.match-password }}
+        MATCH_TYPE: ${{ inputs.type }}
+        MATCH_APP_IDENTIFIERS: ${{ inputs.app-identifiers }}
+        MATCH_TEAM_ID: ${{ inputs.team-id }}
+        MATCH_API_KEY_PATH: ${{ inputs.api-key-path }}
+        MATCH_API_KEY_ID: ${{ inputs.api-key-id }}
+        MATCH_API_ISSUER_ID: ${{ inputs.api-issuer-id }}
+        MATCH_KEYCHAIN_NAME: ${{ inputs.keychain-name }}
+        MATCH_KEYCHAIN_PASSWORD: ${{ inputs.keychain-password }}
+        MATCH_READONLY: ${{ inputs.readonly }}
+      run: |
+        set -euo pipefail
+        # match's --api_key_path expects a JSON envelope with key_id +
+        # issuer_id + key body, not a raw .p8. Build that JSON at
+        # runtime from the inputs the action already has.
+        MATCH_JSON_PATH="$RUNNER_TEMP/asc_match_key.json"
+        KEY_FILE="$MATCH_API_KEY_PATH" \
+        KEY_ID="$MATCH_API_KEY_ID" \
+        ISSUER_ID="$MATCH_API_ISSUER_ID" \
+        python3 -c '
+        import json, os
+        with open(os.environ["KEY_FILE"]) as f:
+            key_body = f.read()
+        print(json.dumps({
+            "key_id": os.environ["KEY_ID"],
+            "issuer_id": os.environ["ISSUER_ID"],
+            "key": key_body,
+            "in_house": False,
+        }))
+        ' > "$MATCH_JSON_PATH"
+        chmod 600 "$MATCH_JSON_PATH"
+
+        READONLY_FLAG=()
+        if [ "$MATCH_READONLY" = "true" ]; then
+          READONLY_FLAG=(--readonly)
+        fi
+
+        fastlane _2.230.0_ match "$MATCH_TYPE" \
+          "${READONLY_FLAG[@]:-}" \
+          --git_url "$MATCH_GIT_URL" \
+          --app_identifier "$MATCH_APP_IDENTIFIERS" \
+          --team_id "$MATCH_TEAM_ID" \
+          --api_key_path "$MATCH_JSON_PATH" \
+          --keychain_name "$MATCH_KEYCHAIN_NAME" \
+          --keychain_password "$MATCH_KEYCHAIN_PASSWORD" \
+          --skip_docs \
+          --verbose
+
+        rm -f "$MATCH_JSON_PATH"
+
+    - name: List installed profiles
+      shell: bash
+      run: |
+        echo "Profiles installed in the user-level store:"
+        ls -la "$HOME/Library/MobileDevice/Provisioning Profiles" || true
