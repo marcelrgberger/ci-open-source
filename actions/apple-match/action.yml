@@ -9,9 +9,12 @@ description: >
 inputs:
   git-url:
     description: >
-      Full HTTPS clone URL of the private match repository, including a PAT
-      token in the URL form `https://x:<TOKEN>@github.com/owner/repo.git`.
-      Pass the token via a GitHub Actions secret, never inline.
+      Clone URL of the private match repository. SSH form
+      `git@github.com:owner/repo.git` is recommended — pair it with an
+      SSH agent started from a repo-scoped deploy key (see the
+      `release-macos-app.yml` reusable workflow for the canonical setup).
+      HTTPS form `https://x:<TOKEN>@github.com/owner/repo.git` is also
+      accepted; pass the token via a secret and never inline.
     required: true
   match-password:
     description: The symmetric passphrase that encrypts the match repository contents.

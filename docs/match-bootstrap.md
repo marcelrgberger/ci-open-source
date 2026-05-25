@@ -37,12 +37,25 @@ When you later add a new bundle ID, re-run the same workflow with the full bundl
 
 ### Step 3 — configure consumer repositories
 
-For each Apple app repository that consumes `ci-open-source`, set these secrets:
+Match access from CI uses an **SSH deploy key** scoped per-consumer-repo and read-only on `apple-certificates`. Generating + uploading the key is one command:
+
+```bash
+ssh-keygen -t ed25519 -C "match deploy key for <consumer-repo>" -f /tmp/match_key -N ""
+gh repo deploy-key add /tmp/match_key.pub \
+  --repo marcelrgberger/apple-certificates \
+  --title "<consumer-repo> CI match read-access"
+gh secret set MATCH_SSH_KEY --repo marcelrgberger/<consumer-repo> < /tmp/match_key
+rm /tmp/match_key /tmp/match_key.pub
+```
+
+The pubkey lands on `apple-certificates` as a **read-only** deploy key; the private key lands as the `MATCH_SSH_KEY` secret on the consumer repo. Deploy keys are scoped to a single repository — even if a consumer's PAT pool gets compromised, the worst case is read access to one private cert repo.
+
+Then set these additional secrets on each consumer:
 
 | Secret | Value |
 | --- | --- |
+| `MATCH_SSH_KEY` | The ed25519 private key from above. |
 | `MATCH_PASSWORD` | Same passphrase as on `apple-certificates`. |
-| `MATCH_GIT_TOKEN` | A fine-grained PAT with **Contents: Read** scoped to `marcelrgberger/apple-certificates` only. |
 | `ASC_API_KEY` | The same `.p8` content (base64). A non-admin role is sufficient here — read-only match + notarytool. |
 | `ASC_API_KEY_ID` | Plain string. |
 | `ASC_ISSUER_ID` | UUID. |

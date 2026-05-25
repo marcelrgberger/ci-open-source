@@ -67,7 +67,7 @@ jobs:
       scheme: MyApp
       app-identifiers: "com.example.MyApp,com.example.MyApp.WidgetExtension"
       team-id: ${{ vars.APPLE_TEAM_ID }}
-      match-git-url-template: "https://x:{TOKEN}@github.com/marcelrgberger/apple-certificates.git"
+      match-git-url: "git@github.com:marcelrgberger/apple-certificates.git"
       provisioning-profiles: |
         com.example.MyApp=match Direct com.example.MyApp
         com.example.MyApp.WidgetExtension=match Direct com.example.MyApp.WidgetExtension
@@ -76,7 +76,7 @@ jobs:
       asc-api-key:          ${{ secrets.ASC_API_KEY }}
       asc-api-key-id:       ${{ secrets.ASC_API_KEY_ID }}
       asc-issuer-id:        ${{ secrets.ASC_ISSUER_ID }}
-      match-git-token:      ${{ secrets.MATCH_GIT_TOKEN }}
+      match-ssh-key:        ${{ secrets.MATCH_SSH_KEY }}
       match-password:       ${{ secrets.MATCH_PASSWORD }}
 ```
 

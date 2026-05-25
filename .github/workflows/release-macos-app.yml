@@ -1,10 +1,11 @@
 name: Reusable — Build, Sign and Notarize a macOS App
 
 # Reference pipeline for direct-distribution (Developer ID) macOS apps:
-# imports the signing cert, fetches profiles via fastlane match, archives
-# and exports the app, then submits it to Apple's notary service. The
-# notarized .app is uploaded as a workflow artifact so the caller can
-# package it (DMG, ZIP, Sparkle delta, …) in its own follow-up jobs.
+# starts an SSH agent for the match deploy key, fetches certs and
+# profiles via fastlane match (read-only), archives and exports the
+# app, then submits it to Apple's notary service. The notarized .app
+# is uploaded as a workflow artifact so the caller can package it
+# (DMG, ZIP, Sparkle delta, …) in its own follow-up jobs.
 #
 # Intentionally narrow — the reusable workflow stops at "I have a
 # notarized .app". Packaging, release upload, appcast patching and tap
@@ -30,12 +31,12 @@ on:
         description: Apple Developer Team ID.
         required: true
         type: string
-      match-git-url-template:
+      match-git-url:
         description: >
-          Match git URL with a `{TOKEN}` placeholder, e.g.
-          `https://x:{TOKEN}@github.com/owner/apple-certificates.git`.
-          The placeholder is substituted with the `match-git-token` secret
-          at runtime so the token never appears in logs.
+          SSH clone URL of the private match repository, e.g.
+          `git@github.com:marcelrgberger/apple-certificates.git`. The
+          workflow starts an SSH agent loaded with the `match-ssh-key`
+          secret before invoking match.
         required: true
         type: string
       provisioning-profiles:
@@ -93,8 +94,11 @@ on:
       asc-issuer-id:
         description: ASC API Issuer ID.
         required: true
-      match-git-token:
-        description: PAT with read access to the private match certificate repository.
+      match-ssh-key:
+        description: >
+          OpenSSH ed25519 private key for the match repository deploy
+          key. The corresponding public key must be configured as a
+          read-only deploy key on the match repo.
         required: true
       match-password:
         description: Symmetric passphrase that encrypts the match repository contents.
@@ -130,6 +134,11 @@ jobs:
         if: inputs.patch-localizations
         run: bash scripts/patch-localizations.sh
 
+      - name: Start SSH agent for match deploy key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.match-ssh-key }}
+
       - name: Create temporary build keychain
         id: keychain
         uses: marcelrgberger/ci-open-source/actions/apple-create-keychain@v1
@@ -144,23 +153,10 @@ jobs:
           key-id: ${{ secrets.asc-api-key-id }}
           issuer-id: ${{ secrets.asc-issuer-id }}
 
-      - name: Resolve match git URL
-        id: match-url
-        shell: bash
-        env:
-          TEMPLATE: ${{ inputs.match-git-url-template }}
-          TOKEN: ${{ secrets.match-git-token }}
-        run: |
-          # Substitute the {TOKEN} placeholder in the template URL via
-          # parameter expansion so the token never appears in argv.
-          URL="${TEMPLATE/\{TOKEN\}/$TOKEN}"
-          echo "::add-mask::$URL"
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-
       - name: Fetch certificates via fastlane match
         uses: marcelrgberger/ci-open-source/actions/apple-match@v1
         with:
-          git-url: ${{ steps.match-url.outputs.url }}
+          git-url: ${{ inputs.match-git-url }}
           match-password: ${{ secrets.match-password }}
           type: developer_id
           app-identifiers: ${{ inputs.app-identifiers }}
