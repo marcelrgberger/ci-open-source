@@ -41,10 +41,18 @@ inputs:
     description: >
       Name of the keychain match should write the cert into. Defaults to the
       login keychain — but if you've already created a temporary build
-      keychain via `apple-import-cert`, point match at that one so all
+      keychain via `apple-create-keychain`, point match at that one so all
       identities live in the same place.
     required: false
     default: login
+  readonly:
+    description: >
+      When `true` (default), runs `fastlane match --readonly` — match only
+      reads from the match repository and never creates or rotates artefacts.
+      Set to `false` for the bootstrap / rotation workflow that runs from
+      within the certificate repository itself.
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -61,7 +69,7 @@ runs:
         fi
         fastlane --version
 
-    - name: Run fastlane match --readonly
+    - name: Run fastlane match
       shell: bash
       env:
         MATCH_GIT_URL: ${{ inputs.git-url }}
@@ -73,13 +81,19 @@ runs:
         MATCH_API_KEY_ID: ${{ inputs.api-key-id }}
         MATCH_API_ISSUER_ID: ${{ inputs.api-issuer-id }}
         MATCH_KEYCHAIN_NAME: ${{ inputs.keychain-name }}
+        MATCH_READONLY: ${{ inputs.readonly }}
       run: |
         set -euo pipefail
-        # --readonly is load-bearing: this action must never create or
-        # rotate certs/profiles. That happens explicitly via a developer-
-        # machine match invocation; the CI side only consumes.
+        # --readonly is the default and load-bearing for CI builds:
+        # consumer pipelines must never create or rotate certs/profiles.
+        # The bootstrap workflow inside the apple-certificates repo
+        # explicitly passes readonly=false to provision new artefacts.
+        READONLY_FLAG=()
+        if [ "$MATCH_READONLY" = "true" ]; then
+          READONLY_FLAG=(--readonly)
+        fi
         fastlane match "$MATCH_TYPE" \
-          --readonly \
+          "${READONLY_FLAG[@]}" \
           --git_url "$MATCH_GIT_URL" \
           --app_identifier "$MATCH_APP_IDENTIFIERS" \
           --team_id "$MATCH_TEAM_ID" \

@@ -1,51 +1,84 @@
-# Bootstrapping fastlane match for the open-source app fleet
+# Bootstrapping fastlane match
 
-One-time setup to get `apple-certificates` populated and every Apple project under the `marcelrgberger` account talking to the same match store.
+One-time setup to get `apple-certificates` populated. After this, every Apple project under the `marcelrgberger` account can fetch its Developer-ID material with a single read-only match call from CI.
 
-## Prerequisites
+There are two ways to run the bootstrap: through GitHub Actions (recommended, no Mac required) or locally on a developer machine (fallback when ASC connectivity is misbehaving). The Actions path is the primary one.
 
-- A Mac with Xcode 26+ and Ruby installed (Homebrew's `ruby` is fine; the system Ruby works for fastlane too).
-- An App Store Connect API key with **Admin** role (key ID, issuer ID, `.p8` file).
-- The private GitHub repository `marcelrgberger/apple-certificates` already created (empty is fine; this guide fills it).
-- Your Developer ID Application certificate accessible — either already in your login keychain or in a `.p12` file. If you don't have it locally, generate a fresh one through Xcode's Manage Certificates UI before starting.
+## Path A — via GitHub Actions (recommended)
 
-## Step 1 — install fastlane
+### Step 1 — set the admin secrets on `apple-certificates`
+
+The bootstrap workflow lives inside the private `apple-certificates` repository and needs five pieces of state. Set them via the Settings UI or `gh secret set`:
+
+| Secret | Value | Notes |
+| --- | --- | --- |
+| `ASC_API_KEY_ADMIN` | Base64-encoded `.p8` file content. | ASC API key with **Admin** role. Required to create certs and profiles. |
+| `ASC_API_KEY_ID` | The ASC API Key ID. | Plain string. |
+| `ASC_ISSUER_ID` | The ASC API Issuer ID. | UUID. |
+| `MATCH_PASSWORD` | A strong random passphrase. | Save in 1Password — losing this means re-bootstrapping from scratch. Generate with `openssl rand -base64 48`. |
+
+Also set the repository variable:
+
+| Variable | Value |
+| --- | --- |
+| `APPLE_TEAM_ID` | Your Apple Developer Team ID (not a secret — Team IDs are public). |
+
+### Step 2 — run the workflow
+
+Navigate to `apple-certificates` → **Actions** → **Bootstrap / Rotate match** → **Run workflow**:
+
+- **app-identifiers**: comma-separated list, e.g. `za.co.digitalfreedom.AutoBrew,za.co.digitalfreedom.AutoBrew.WidgetExtension,za.co.digitalfreedom.AutoBrew.cli`.
+- **type**: leave on `developer_id` for direct-distribution apps.
+- **nuke**: leave unchecked on the first run. Only enable when intentionally rotating — `nuke` revokes the existing cert and profiles on Apple's side as well.
+
+The workflow runs `fastlane match`, creates the cert + provisioning profiles via the ASC API, encrypts the artefacts with `MATCH_PASSWORD`, and commits + pushes back into the repo.
+
+When you later add a new bundle ID, re-run the same workflow with the full bundle-ID list — match is incremental and only creates what's missing.
+
+### Step 3 — configure consumer repositories
+
+For each Apple app repository that consumes `ci-open-source`, set these secrets:
+
+| Secret | Value |
+| --- | --- |
+| `MATCH_PASSWORD` | Same passphrase as on `apple-certificates`. |
+| `MATCH_GIT_TOKEN` | A fine-grained PAT with **Contents: Read** scoped to `marcelrgberger/apple-certificates` only. |
+| `ASC_API_KEY` | The same `.p8` content (base64). A non-admin role is sufficient here — read-only match + notarytool. |
+| `ASC_API_KEY_ID` | Plain string. |
+| `ASC_ISSUER_ID` | UUID. |
+| `KEYCHAIN_PASSWORD` | Any random string — used to lock the transient CI keychain. |
+| `SPARKLE_PRIVATE_KEY` | Per-app EdDSA private key, base64. Only when the app ships Sparkle updates. |
+
+Notice that **no `APPLE_CERT_P12` is required on consumer repos** — match handles cert installation on the runner.
+
+### Rotation playbook
+
+When the Developer ID Application certificate is approaching expiry (Xcode shows a warning ~30 days ahead):
+
+1. Open `apple-certificates` → Actions → Bootstrap / Rotate match.
+2. Run workflow with the full bundle-ID list **and `nuke: true`**.
+3. Wait for the run to finish. Apple-side revocation is immediate; the new cert is now in the match store.
+4. CI builds continue working without intervention — the next `match --readonly` from a consumer pipeline picks up the new cert and profiles automatically.
+
+No CI workflow changes needed during rotation.
+
+## Path B — local fallback
+
+Use this when the Actions path can't reach App Store Connect (rare; usually a transient ASC outage) or when you need to debug a match issue interactively.
+
+### Prerequisites
+
+- A Mac with Xcode 26+ and Ruby (system Ruby is fine).
+- The ASC API `.p8` key at a known path on disk.
+- The `MATCH_PASSWORD` passphrase in your password manager.
+
+### Commands
 
 ```bash
 gem install fastlane --no-document
-fastlane --version  # expect 2.220+
-```
+export MATCH_PASSWORD='<your passphrase>'
 
-## Step 2 — pick a passphrase
-
-Generate a strong random passphrase. **Save it in your password manager immediately** — losing this passphrase means the match repository becomes unreadable and you start over from scratch.
-
-```bash
-openssl rand -base64 48
-```
-
-## Step 3 — nuke any stale state
-
-If `apple-certificates` already has old entries (or you're rotating after a leak), wipe them first. **`nuke` deletes the corresponding certs on Apple's side too** — only run this if you're sure.
-
-```bash
-fastlane match nuke developer_id \
-  --git_url "git@github.com:marcelrgberger/apple-certificates.git" \
-  --team_id <YOUR_TEAM_ID> \
-  --api_key_path ~/Developer/aso/keys/AuthKey_<KEY_ID>.p8 \
-  --api_key_id <KEY_ID> \
-  --api_issuer_id <ISSUER_ID>
-```
-
-Skip this step on a fresh setup.
-
-## Step 4 — provision certificates and profiles
-
-Run match in **read-write** mode. This is the only invocation that creates new artefacts; CI runs `--readonly`.
-
-```bash
-export MATCH_PASSWORD='<the passphrase from step 2>'
-
+# Provision incrementally — same as Path A step 2.
 fastlane match developer_id \
   --git_url "git@github.com:marcelrgberger/apple-certificates.git" \
   --app_identifier "za.co.digitalfreedom.AutoBrew,za.co.digitalfreedom.AutoBrew.WidgetExtension,za.co.digitalfreedom.AutoBrew.cli" \
@@ -53,49 +86,15 @@ fastlane match developer_id \
   --api_key_path ~/Developer/aso/keys/AuthKey_<KEY_ID>.p8 \
   --api_key_id <KEY_ID> \
   --api_issuer_id <ISSUER_ID>
+
+# Rotate — same as Path A step 2 with nuke:
+fastlane match nuke developer_id \
+  --git_url "git@github.com:marcelrgberger/apple-certificates.git" \
+  --team_id <YOUR_TEAM_ID> \
+  --api_key_path ~/Developer/aso/keys/AuthKey_<KEY_ID>.p8 \
+  --api_key_id <KEY_ID> \
+  --api_issuer_id <ISSUER_ID>
+# then repeat the provision command above.
 ```
 
-After this, the private `apple-certificates` repo contains AES-encrypted blobs and the local login keychain has the newly issued cert. The profiles end up under `~/Library/MobileDevice/Provisioning Profiles`.
-
-Re-run the same command (without `nuke`) every time you add a new bundle ID to an app — match is incremental, it only creates what's missing.
-
-## Step 5 — push and verify
-
-```bash
-cd $(fastlane match dir)  # match prints this; usually ~/Library/.../fastlane/match
-git status                # confirm the new files are present
-git push                  # push to apple-certificates
-```
-
-Match auto-commits and auto-pushes when you give it a writable git URL — verify the push landed on GitHub by opening the private repo's commit list.
-
-## Step 6 — configure consumer secrets
-
-In each Apple app repository that consumes `ci-open-source`, set these secrets:
-
-| Secret | Value |
-| --- | --- |
-| `MATCH_PASSWORD` | The passphrase from step 2. |
-| `MATCH_GIT_TOKEN` | A fine-grained PAT with **Contents: Read** scoped to `marcelrgberger/apple-certificates`. |
-| `APPLE_CERT_P12` | The Developer ID `.p12` exported from the keychain, base64-encoded. |
-| `APPLE_CERT_PASSWORD` | The `.p12` export password. |
-| `KEYCHAIN_PASSWORD` | Any random string — used to lock the transient CI keychain. |
-| `ASC_API_KEY` | The `.p8` file content, base64-encoded. |
-| `ASC_API_KEY_ID` | The ASC API Key ID. |
-| `ASC_ISSUER_ID` | The ASC API Issuer ID. |
-
-The cert + ASC key secrets stay needed because match-managed profiles still reference your real Developer ID identity — the `.p12` carries the private key that match cannot store on Apple's side.
-
-## Step 7 — call the reusable workflow
-
-See [onboarding.md](onboarding.md) for the consumer-side workflow template.
-
-## Rotation playbook
-
-When your Developer ID certificate is approaching expiry (Xcode shows it in the Signing UI ~30 days ahead):
-
-1. From your developer Mac, run `fastlane match nuke developer_id` followed by `fastlane match developer_id …` (same command as step 4).
-2. Re-export the new `.p12` from the keychain and refresh the `APPLE_CERT_P12` + `APPLE_CERT_PASSWORD` secrets in every consumer repository.
-3. CI runs continue to work because `--readonly` picks up the new cert + profiles from the next match repo pull automatically.
-
-No CI workflow changes needed during rotation — only the per-consumer cert secret rotates.
+Match auto-commits and auto-pushes to the match repo when the git URL is writable, so no extra `git push` step is needed.

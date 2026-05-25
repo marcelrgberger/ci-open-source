@@ -12,9 +12,10 @@ Drop into any job step with `uses: marcelrgberger/ci-open-source/actions/<name>@
 
 | Action | What it does |
 | --- | --- |
-| `apple-import-cert` | Imports a base64-encoded Developer ID `.p12` certificate into a fresh temporary keychain on the runner. |
+| `apple-create-keychain` | Creates a fresh, unlocked temporary keychain on the runner. The recommended companion for `apple-match` — match installs the cert + profiles into this keychain. |
+| `apple-import-cert` | Fallback alternative when not using match: imports a base64-encoded Developer ID `.p12` certificate into a fresh temporary keychain on the runner. |
 | `apple-asc-key` | Materializes a base64-encoded App Store Connect API key (`AuthKey_*.p8`) on disk and exports its path + ID as outputs for downstream actions. |
-| `apple-match` | Runs `fastlane match --readonly` against a private certificate repository, fetching Developer-ID provisioning profiles for every bundle ID. |
+| `apple-match` | Runs `fastlane match` (read-only by default) against a private certificate repository, fetching the Developer-ID cert and provisioning profiles for every bundle ID. Set `readonly: false` for the bootstrap/rotation flow. |
 | `macos-archive` | Runs `xcodebuild archive` + `xcodebuild -exportArchive` with manual signing and an auto-generated `ExportOptions.plist`. |
 | `macos-codesign-dmg` | Code-signs a built `.dmg` with the Developer ID Application identity (hardened runtime + secure timestamp). Required so the DMG passes Gatekeeper outside of brew/cask install paths. |
 | `macos-notarize` | Submits an `.app` or `.dmg` to Apple's notary service via `notarytool` and staples the resulting ticket. |

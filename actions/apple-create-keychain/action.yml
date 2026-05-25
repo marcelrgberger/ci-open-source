@@ -1,0 +1,48 @@
+name: Create a Temporary Build Keychain
+description: >
+  Creates a fresh, unlocked keychain on the runner and adds it to the
+  user-level search list. Use this as the destination for fastlane match
+  when you want the imported cert + profiles to live in a dedicated
+  per-run keychain instead of the runner's login keychain.
+
+inputs:
+  keychain-password:
+    description: >
+      Password for the temporary build keychain. Any sufficiently random
+      secret will do; nothing reads it back after the run finishes.
+    required: true
+  keychain-name:
+    description: Filename for the keychain (without path). Defaults to `app-signing.keychain-db`.
+    required: false
+    default: app-signing.keychain-db
+
+outputs:
+  keychain-path:
+    description: Absolute path to the created keychain.
+    value: ${{ steps.create.outputs.keychain-path }}
+  keychain-name:
+    description: Echo of the keychain-name input (without the `.keychain-db` suffix), suitable for fastlane match `--keychain_name`.
+    value: ${{ steps.create.outputs.keychain-name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Create keychain
+      id: create
+      shell: bash
+      env:
+        KEYCHAIN_PASSWORD: ${{ inputs.keychain-password }}
+        KEYCHAIN_FILENAME: ${{ inputs.keychain-name }}
+      run: |
+        set -euo pipefail
+        KEYCHAIN_PATH="$RUNNER_TEMP/$KEYCHAIN_FILENAME"
+        security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+        security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+        security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+        security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+        # match expects the name without the `.keychain-db` suffix when
+        # passed via --keychain_name. Strip it once for the output.
+        BARE_NAME="${KEYCHAIN_FILENAME%.keychain-db}"
+        echo "keychain-path=$KEYCHAIN_PATH" >> "$GITHUB_OUTPUT"
+        echo "keychain-name=$BARE_NAME"     >> "$GITHUB_OUTPUT"

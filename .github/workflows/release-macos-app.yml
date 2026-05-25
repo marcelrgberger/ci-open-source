@@ -81,12 +81,6 @@ on:
         type: string
         default: macos-app
     secrets:
-      apple-cert-p12:
-        description: Base64-encoded Developer ID Application .p12.
-        required: true
-      apple-cert-password:
-        description: Password for the .p12.
-        required: true
       keychain-password:
         description: Random secret used as the temporary build keychain password.
         required: true
@@ -136,11 +130,10 @@ jobs:
         if: inputs.patch-localizations
         run: bash scripts/patch-localizations.sh
 
-      - name: Import Developer ID certificate
-        uses: marcelrgberger/ci-open-source/actions/apple-import-cert@v1
+      - name: Create temporary build keychain
+        id: keychain
+        uses: marcelrgberger/ci-open-source/actions/apple-create-keychain@v1
         with:
-          certificate-base64: ${{ secrets.apple-cert-p12 }}
-          certificate-password: ${{ secrets.apple-cert-password }}
           keychain-password: ${{ secrets.keychain-password }}
 
       - name: Materialize ASC API key
@@ -175,6 +168,8 @@ jobs:
           api-key-path: ${{ steps.asc.outputs.key-path }}
           api-key-id: ${{ steps.asc.outputs.key-id }}
           api-issuer-id: ${{ steps.asc.outputs.issuer-id }}
+          keychain-name: ${{ steps.keychain.outputs.keychain-name }}
+          readonly: "true"
 
       - name: Resolve Swift packages
         shell: bash

@@ -28,7 +28,7 @@ Match is incremental — it only creates what's missing, so this is safe to re-r
 
 ## Step 2 — set repository secrets
 
-Add the secrets listed in [match-bootstrap.md § Step 6](match-bootstrap.md#step-6--configure-consumer-secrets) to the consumer repo settings.
+Add the secrets listed in [match-bootstrap.md § Step 3](match-bootstrap.md#step-3--configure-consumer-repositories) to the consumer repo settings.
 
 ## Step 3 — minimum project.yml
 
@@ -72,8 +72,6 @@ jobs:
         com.example.MyApp=match Direct com.example.MyApp
         com.example.MyApp.WidgetExtension=match Direct com.example.MyApp.WidgetExtension
     secrets:
-      apple-cert-p12:       ${{ secrets.APPLE_CERT_P12 }}
-      apple-cert-password:  ${{ secrets.APPLE_CERT_PASSWORD }}
       keychain-password:    ${{ secrets.KEYCHAIN_PASSWORD }}
       asc-api-key:          ${{ secrets.ASC_API_KEY }}
       asc-api-key-id:       ${{ secrets.ASC_API_KEY_ID }}
