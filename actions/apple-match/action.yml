@@ -95,8 +95,11 @@ runs:
         if [ "$MATCH_READONLY" = "true" ]; then
           READONLY_FLAG=(--readonly)
         fi
+        # `"${arr[@]:-}"` is the bash-3.2-safe array expansion under
+        # `set -u` — plain `"${arr[@]}"` is treated as an unbound
+        # variable reference when the array is empty.
         fastlane match "$MATCH_TYPE" \
-          "${READONLY_FLAG[@]}" \
+          "${READONLY_FLAG[@]:-}" \
           --git_url "$MATCH_GIT_URL" \
           --app_identifier "$MATCH_APP_IDENTIFIERS" \
           --team_id "$MATCH_TEAM_ID" \
