@@ -1,0 +1,38 @@
+name: Code-Sign a macOS DMG
+description: >
+  Code-signs a .dmg container with the Developer ID Application identity,
+  hardened runtime and a secure timestamp. Required before notarization
+  and before Gatekeeper will accept the DMG when the user double-clicks
+  the downloaded image. Sign the embedded .app first; this action signs
+  the container around it.
+
+inputs:
+  dmg-path:
+    description: Absolute path to the .dmg file to sign.
+    required: true
+  identity:
+    description: Codesign identity name.
+    required: false
+    default: Developer ID Application
+
+runs:
+  using: composite
+  steps:
+    - name: codesign the DMG
+      shell: bash
+      env:
+        DMG_PATH: ${{ inputs.dmg-path }}
+        IDENTITY: ${{ inputs.identity }}
+      run: |
+        set -euo pipefail
+        if [ ! -f "$DMG_PATH" ]; then
+          echo "DMG not found at $DMG_PATH" >&2
+          exit 1
+        fi
+        codesign \
+          --sign "$IDENTITY" \
+          --options runtime \
+          --timestamp \
+          --force \
+          "$DMG_PATH"
+        codesign --verify --verbose "$DMG_PATH"

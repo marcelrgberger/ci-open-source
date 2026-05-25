@@ -1,0 +1,95 @@
+name: Fetch Apple Certificates via fastlane match
+description: >
+  Reads Developer ID certificates and provisioning profiles from a private
+  fastlane match repository and installs them into the runner. Read-only —
+  this action never modifies the match repo. Cert and profile creation /
+  rotation happens through a separate, manual `fastlane match` invocation
+  on a developer machine.
+
+inputs:
+  git-url:
+    description: >
+      Full HTTPS clone URL of the private match repository, including a PAT
+      token in the URL form `https://x:<TOKEN>@github.com/owner/repo.git`.
+      Pass the token via a GitHub Actions secret, never inline.
+    required: true
+  match-password:
+    description: The symmetric passphrase that encrypts the match repository contents.
+    required: true
+  type:
+    description: One of `developer_id`, `appstore`, `adhoc`, `development`, or `enterprise`.
+    required: false
+    default: developer_id
+  app-identifiers:
+    description: >
+      Comma-separated list of bundle IDs to provision. All of them must
+      already exist in App Store Connect (registered Bundle IDs).
+    required: true
+  team-id:
+    description: Apple Developer Team ID.
+    required: true
+  api-key-path:
+    description: Path to the ASC API .p8 file (typically the `key-path` output of `apple-asc-key`).
+    required: true
+  api-key-id:
+    description: ASC API Key ID.
+    required: true
+  api-issuer-id:
+    description: ASC API Issuer ID.
+    required: true
+  keychain-name:
+    description: >
+      Name of the keychain match should write the cert into. Defaults to the
+      login keychain — but if you've already created a temporary build
+      keychain via `apple-import-cert`, point match at that one so all
+      identities live in the same place.
+    required: false
+    default: login
+
+runs:
+  using: composite
+  steps:
+    - name: Install fastlane
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v fastlane >/dev/null 2>&1; then
+          # macOS runners ship a recent enough Ruby; we pin fastlane to a
+          # known-good major. Bumping requires verifying that match's
+          # MAC_APP_DIRECT support is still present (it is, from 2.207+).
+          gem install fastlane --version "~> 2.220" --no-document
+        fi
+        fastlane --version
+
+    - name: Run fastlane match --readonly
+      shell: bash
+      env:
+        MATCH_GIT_URL: ${{ inputs.git-url }}
+        MATCH_PASSWORD: ${{ inputs.match-password }}
+        MATCH_TYPE: ${{ inputs.type }}
+        MATCH_APP_IDENTIFIERS: ${{ inputs.app-identifiers }}
+        MATCH_TEAM_ID: ${{ inputs.team-id }}
+        MATCH_API_KEY_PATH: ${{ inputs.api-key-path }}
+        MATCH_API_KEY_ID: ${{ inputs.api-key-id }}
+        MATCH_API_ISSUER_ID: ${{ inputs.api-issuer-id }}
+        MATCH_KEYCHAIN_NAME: ${{ inputs.keychain-name }}
+      run: |
+        set -euo pipefail
+        # --readonly is load-bearing: this action must never create or
+        # rotate certs/profiles. That happens explicitly via a developer-
+        # machine match invocation; the CI side only consumes.
+        fastlane match "$MATCH_TYPE" \
+          --readonly \
+          --git_url "$MATCH_GIT_URL" \
+          --app_identifier "$MATCH_APP_IDENTIFIERS" \
+          --team_id "$MATCH_TEAM_ID" \
+          --api_key_path "$MATCH_API_KEY_PATH" \
+          --keychain_name "$MATCH_KEYCHAIN_NAME" \
+          --skip_docs \
+          --verbose
+
+    - name: List installed profiles
+      shell: bash
+      run: |
+        echo "Profiles installed in the user-level store:"
+        ls -la "$HOME/Library/MobileDevice/Provisioning Profiles" || true

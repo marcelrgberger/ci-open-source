@@ -1,0 +1,87 @@
+name: Sign a Sparkle Update Payload
+description: >
+  Signs a Sparkle update artifact (.zip or delta .patch) with an EdDSA
+  private key and emits the signature and content length so the calling
+  workflow can write them into appcast.xml. Uses Sparkle's bundled
+  `sign_update` tool — caller must have Sparkle already resolved as a
+  Swift Package dependency of the project so the binary is on disk
+  inside DerivedData; pass that path as an input if it can't be
+  auto-discovered.
+
+inputs:
+  private-key-base64:
+    description: Base64-encoded Sparkle EdDSA private key.
+    required: true
+  artifact-path:
+    description: Absolute path to the artifact to sign (.zip or delta .patch).
+    required: true
+  sign-update-tool-path:
+    description: >
+      Optional override for the path to Sparkle's `sign_update` binary. When
+      empty, the action searches DerivedData for it. Provide this when
+      Sparkle isn't resolved into DerivedData yet — for example, if you
+      call this action before any xcodebuild step.
+    required: false
+    default: ""
+
+outputs:
+  signature:
+    description: The EdDSA signature in Sparkle's expected base64 form.
+    value: ${{ steps.sign.outputs.signature }}
+  length:
+    description: The byte length of the signed artifact.
+    value: ${{ steps.sign.outputs.length }}
+
+runs:
+  using: composite
+  steps:
+    - name: Locate sign_update
+      id: locate
+      shell: bash
+      env:
+        OVERRIDE: ${{ inputs.sign-update-tool-path }}
+      run: |
+        set -euo pipefail
+        if [ -n "$OVERRIDE" ]; then
+          TOOL="$OVERRIDE"
+        else
+          TOOL="$(find "$HOME/Library/Developer/Xcode/DerivedData" \
+                   -type f -name sign_update 2>/dev/null | head -n1)"
+        fi
+        if [ -z "$TOOL" ] || [ ! -x "$TOOL" ]; then
+          echo "Could not find Sparkle's sign_update binary." >&2
+          echo "Searched DerivedData; pass sign-update-tool-path explicitly if Sparkle isn't built yet." >&2
+          exit 1
+        fi
+        echo "tool=$TOOL" >> "$GITHUB_OUTPUT"
+
+    - name: Sign the artifact
+      id: sign
+      shell: bash
+      env:
+        PRIVATE_KEY_BASE64: ${{ inputs.private-key-base64 }}
+        ARTIFACT_PATH: ${{ inputs.artifact-path }}
+        SIGN_TOOL: ${{ steps.locate.outputs.tool }}
+      run: |
+        set -euo pipefail
+        KEY_FILE="$RUNNER_TEMP/sparkle_eddsa_private.key"
+        echo -n "$PRIVATE_KEY_BASE64" | base64 --decode > "$KEY_FILE"
+        chmod 600 "$KEY_FILE"
+
+        # sign_update reads the key from --ed-key-file and prints the
+        # signature attribute to stdout in the form
+        # `sparkle:edSignature="…" length="…"`. We parse it back out so
+        # the caller can embed the two values into appcast.xml.
+        RAW="$("$SIGN_TOOL" --ed-key-file "$KEY_FILE" "$ARTIFACT_PATH")"
+        rm -f "$KEY_FILE"
+
+        SIGNATURE="$(echo "$RAW" | sed -E 's/.*sparkle:edSignature="([^"]+)".*/\1/')"
+        LENGTH="$(echo "$RAW"   | sed -E 's/.*length="([^"]+)".*/\1/')"
+
+        if [ -z "$SIGNATURE" ] || [ -z "$LENGTH" ]; then
+          echo "Failed to parse signature output: $RAW" >&2
+          exit 1
+        fi
+
+        echo "signature=$SIGNATURE" >> "$GITHUB_OUTPUT"
+        echo "length=$LENGTH"       >> "$GITHUB_OUTPUT"

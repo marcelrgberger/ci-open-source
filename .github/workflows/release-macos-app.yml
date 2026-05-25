@@ -1,0 +1,214 @@
+name: Reusable — Build, Sign and Notarize a macOS App
+
+# Reference pipeline for direct-distribution (Developer ID) macOS apps:
+# imports the signing cert, fetches profiles via fastlane match, archives
+# and exports the app, then submits it to Apple's notary service. The
+# notarized .app is uploaded as a workflow artifact so the caller can
+# package it (DMG, ZIP, Sparkle delta, …) in its own follow-up jobs.
+#
+# Intentionally narrow — the reusable workflow stops at "I have a
+# notarized .app". Packaging, release upload, appcast patching and tap
+# bumping are app-specific and stay in the caller. Use the à-la-carte
+# composite actions for those parts.
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: Path to the .xcodeproj.
+        required: true
+        type: string
+      scheme:
+        description: Scheme to archive.
+        required: true
+        type: string
+      app-identifiers:
+        description: Comma-separated list of bundle IDs match should fetch profiles for.
+        required: true
+        type: string
+      team-id:
+        description: Apple Developer Team ID.
+        required: true
+        type: string
+      match-git-url-template:
+        description: >
+          Match git URL with a `{TOKEN}` placeholder, e.g.
+          `https://x:{TOKEN}@github.com/owner/apple-certificates.git`.
+          The placeholder is substituted with the `match-git-token` secret
+          at runtime so the token never appears in logs.
+        required: true
+        type: string
+      provisioning-profiles:
+        description: >
+          Multi-line bundleID=profileName mapping for the export step
+          (one mapping per line). Profile names are what fastlane match
+          writes — by default they look like `match Direct <bundleID>`.
+        required: true
+        type: string
+      configuration:
+        description: Xcode build configuration.
+        required: false
+        type: string
+        default: Release
+      export-method:
+        description: ExportOptions method (developer-id, app-store, …).
+        required: false
+        type: string
+        default: developer-id
+      xcode-version:
+        description: Xcode version selector for `maxim-lobanov/setup-xcode`.
+        required: false
+        type: string
+        default: "^26"
+      runs-on:
+        description: Runner label.
+        required: false
+        type: string
+        default: macos-26
+      run-xcodegen:
+        description: Run `xcodegen generate` before archiving (set false if the .xcodeproj is committed).
+        required: false
+        type: boolean
+        default: true
+      patch-localizations:
+        description: Run `bash scripts/patch-localizations.sh` after xcodegen (set false if you don't ship .xcstrings).
+        required: false
+        type: boolean
+        default: true
+      artifact-name:
+        description: Name of the uploaded artifact containing the notarized .app.
+        required: false
+        type: string
+        default: macos-app
+    secrets:
+      apple-cert-p12:
+        description: Base64-encoded Developer ID Application .p12.
+        required: true
+      apple-cert-password:
+        description: Password for the .p12.
+        required: true
+      keychain-password:
+        description: Random secret used as the temporary build keychain password.
+        required: true
+      asc-api-key:
+        description: Base64-encoded App Store Connect API .p8 key.
+        required: true
+      asc-api-key-id:
+        description: ASC API Key ID.
+        required: true
+      asc-issuer-id:
+        description: ASC API Issuer ID.
+        required: true
+      match-git-token:
+        description: PAT with read access to the private match certificate repository.
+        required: true
+      match-password:
+        description: Symmetric passphrase that encrypts the match repository contents.
+        required: true
+    outputs:
+      artifact-name:
+        description: Name of the uploaded artifact (mirrors the input for downstream jobs).
+        value: ${{ inputs.artifact-name }}
+
+jobs:
+  build:
+    name: Build, sign, notarize
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 45
+    steps:
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ inputs.xcode-version }}
+
+      - name: Checkout caller repository
+        uses: actions/checkout@v5
+
+      - name: Install XcodeGen
+        if: inputs.run-xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        if: inputs.run-xcodegen
+        run: xcodegen generate
+
+      - name: Patch localizations
+        if: inputs.patch-localizations
+        run: bash scripts/patch-localizations.sh
+
+      - name: Import Developer ID certificate
+        uses: marcelrgberger/ci-open-source/actions/apple-import-cert@v1
+        with:
+          certificate-base64: ${{ secrets.apple-cert-p12 }}
+          certificate-password: ${{ secrets.apple-cert-password }}
+          keychain-password: ${{ secrets.keychain-password }}
+
+      - name: Materialize ASC API key
+        id: asc
+        uses: marcelrgberger/ci-open-source/actions/apple-asc-key@v1
+        with:
+          key-base64: ${{ secrets.asc-api-key }}
+          key-id: ${{ secrets.asc-api-key-id }}
+          issuer-id: ${{ secrets.asc-issuer-id }}
+
+      - name: Resolve match git URL
+        id: match-url
+        shell: bash
+        env:
+          TEMPLATE: ${{ inputs.match-git-url-template }}
+          TOKEN: ${{ secrets.match-git-token }}
+        run: |
+          # Substitute the {TOKEN} placeholder in the template URL via
+          # parameter expansion so the token never appears in argv.
+          URL="${TEMPLATE/\{TOKEN\}/$TOKEN}"
+          echo "::add-mask::$URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch certificates via fastlane match
+        uses: marcelrgberger/ci-open-source/actions/apple-match@v1
+        with:
+          git-url: ${{ steps.match-url.outputs.url }}
+          match-password: ${{ secrets.match-password }}
+          type: developer_id
+          app-identifiers: ${{ inputs.app-identifiers }}
+          team-id: ${{ inputs.team-id }}
+          api-key-path: ${{ steps.asc.outputs.key-path }}
+          api-key-id: ${{ steps.asc.outputs.key-id }}
+          api-issuer-id: ${{ steps.asc.outputs.issuer-id }}
+
+      - name: Resolve Swift packages
+        shell: bash
+        env:
+          PROJECT: ${{ inputs.project }}
+          SCHEME: ${{ inputs.scheme }}
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project "$PROJECT" -scheme "$SCHEME"
+
+      - name: Archive and export
+        id: archive
+        uses: marcelrgberger/ci-open-source/actions/macos-archive@v1
+        with:
+          project: ${{ inputs.project }}
+          scheme: ${{ inputs.scheme }}
+          configuration: ${{ inputs.configuration }}
+          export-method: ${{ inputs.export-method }}
+          team-id: ${{ inputs.team-id }}
+          signing-style: manual
+          provisioning-profiles: ${{ inputs.provisioning-profiles }}
+
+      - name: Notarize the .app
+        uses: marcelrgberger/ci-open-source/actions/macos-notarize@v1
+        with:
+          bundle-path: ${{ steps.archive.outputs.app-path }}
+          api-key-path: ${{ steps.asc.outputs.key-path }}
+          api-key-id: ${{ steps.asc.outputs.key-id }}
+          api-issuer-id: ${{ steps.asc.outputs.issuer-id }}
+
+      - name: Upload notarized .app
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ steps.archive.outputs.export-dir }}
+          if-no-files-found: error
+          retention-days: 7

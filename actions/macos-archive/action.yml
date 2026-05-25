@@ -1,0 +1,177 @@
+name: Archive and Export a macOS App
+description: >
+  Runs `xcodebuild archive` followed by `xcodebuild -exportArchive`, producing
+  a signed `.app` ready to be notarized. The export step writes a temporary
+  ExportOptions.plist from the inputs so callers don't have to maintain a
+  separate plist file. Defaults are tuned for direct-distribution apps
+  (developer-id export method, manual signing with match-managed profiles).
+
+inputs:
+  project:
+    description: Path to the .xcodeproj file (relative to the working directory).
+    required: true
+  scheme:
+    description: Scheme to archive.
+    required: true
+  configuration:
+    description: Build configuration. Defaults to Release.
+    required: false
+    default: Release
+  archive-path:
+    description: Where to write the .xcarchive. Defaults to build/<scheme>.xcarchive.
+    required: false
+    default: ""
+  export-path:
+    description: Where to export the signed product. Defaults to build/export.
+    required: false
+    default: build/export
+  export-method:
+    description: One of developer-id, app-store, ad-hoc, mac-application, enterprise, development.
+    required: false
+    default: developer-id
+  team-id:
+    description: Apple Developer Team ID.
+    required: true
+  signing-style:
+    description: automatic or manual. Manual is the right answer when fastlane match owns the profiles.
+    required: false
+    default: manual
+  signing-certificate:
+    description: Codesign identity name (e.g. "Developer ID Application").
+    required: false
+    default: Developer ID Application
+  provisioning-profiles:
+    description: >
+      For manual signing — a multi-line `bundleID=profileName` mapping (one
+      per line). Profile names are the human-readable names match generates
+      (e.g. `match Direct za.co.digitalfreedom.AutoBrew`). Ignored when
+      signing-style is automatic.
+    required: false
+    default: ""
+
+outputs:
+  app-path:
+    description: Absolute path to the exported .app bundle.
+    value: ${{ steps.locate.outputs.app-path }}
+  export-dir:
+    description: Absolute path to the export directory containing the .app.
+    value: ${{ steps.locate.outputs.export-dir }}
+  archive-path:
+    description: Absolute path to the .xcarchive.
+    value: ${{ steps.archive.outputs.archive-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Archive
+      id: archive
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+        SCHEME: ${{ inputs.scheme }}
+        CONFIGURATION: ${{ inputs.configuration }}
+        ARCHIVE_PATH_INPUT: ${{ inputs.archive-path }}
+        TEAM_ID: ${{ inputs.team-id }}
+        SIGNING_STYLE: ${{ inputs.signing-style }}
+        SIGNING_CERT: ${{ inputs.signing-certificate }}
+      run: |
+        set -euo pipefail
+        if [ -z "$ARCHIVE_PATH_INPUT" ]; then
+          ARCHIVE_PATH="build/${SCHEME}.xcarchive"
+        else
+          ARCHIVE_PATH="$ARCHIVE_PATH_INPUT"
+        fi
+        mkdir -p "$(dirname "$ARCHIVE_PATH")"
+
+        # Capitalize signing-style for the build setting. The action input is
+        # lowercase to match the ExportOptions.plist spelling, but xcodebuild
+        # wants the title-cased version.
+        case "$SIGNING_STYLE" in
+          automatic) STYLE_FLAG="Automatic" ;;
+          manual)    STYLE_FLAG="Manual"    ;;
+          *) echo "Unsupported signing-style: $SIGNING_STYLE" >&2; exit 1 ;;
+        esac
+
+        xcodebuild archive \
+          -project "$PROJECT" \
+          -scheme "$SCHEME" \
+          -configuration "$CONFIGURATION" \
+          -destination 'platform=macOS' \
+          -archivePath "$ARCHIVE_PATH" \
+          CODE_SIGN_STYLE="$STYLE_FLAG" \
+          CODE_SIGN_IDENTITY="$SIGNING_CERT" \
+          DEVELOPMENT_TEAM="$TEAM_ID"
+
+        echo "archive-path=$ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
+
+    - name: Generate ExportOptions.plist
+      id: plist
+      shell: bash
+      env:
+        TEAM_ID: ${{ inputs.team-id }}
+        EXPORT_METHOD: ${{ inputs.export-method }}
+        SIGNING_STYLE: ${{ inputs.signing-style }}
+        SIGNING_CERT: ${{ inputs.signing-certificate }}
+        PROFILE_MAP: ${{ inputs.provisioning-profiles }}
+      run: |
+        set -euo pipefail
+        PLIST_PATH="$RUNNER_TEMP/ExportOptions.plist"
+
+        # Build the optional provisioningProfiles dict from a bundleID=name
+        # list passed in via inputs. Empty when signing-style is automatic.
+        PROFILES_BLOCK=""
+        if [ "$SIGNING_STYLE" = "manual" ] && [ -n "$PROFILE_MAP" ]; then
+          PROFILES_BLOCK="<key>provisioningProfiles</key><dict>"
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            key="${line%%=*}"
+            value="${line#*=}"
+            PROFILES_BLOCK="${PROFILES_BLOCK}<key>${key}</key><string>${value}</string>"
+          done <<< "$PROFILE_MAP"
+          PROFILES_BLOCK="${PROFILES_BLOCK}</dict>"
+        fi
+
+        cat > "$PLIST_PATH" <<EOF
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>method</key><string>${EXPORT_METHOD}</string>
+            <key>teamID</key><string>${TEAM_ID}</string>
+            <key>signingStyle</key><string>${SIGNING_STYLE}</string>
+            <key>signingCertificate</key><string>${SIGNING_CERT}</string>
+            ${PROFILES_BLOCK}
+        </dict>
+        </plist>
+        EOF
+
+        echo "plist-path=$PLIST_PATH" >> "$GITHUB_OUTPUT"
+
+    - name: Export archive
+      shell: bash
+      env:
+        ARCHIVE_PATH: ${{ steps.archive.outputs.archive-path }}
+        EXPORT_PATH: ${{ inputs.export-path }}
+        PLIST_PATH: ${{ steps.plist.outputs.plist-path }}
+      run: |
+        set -euo pipefail
+        xcodebuild -exportArchive \
+          -archivePath "$ARCHIVE_PATH" \
+          -exportPath "$EXPORT_PATH" \
+          -exportOptionsPlist "$PLIST_PATH"
+
+    - name: Locate the exported .app
+      id: locate
+      shell: bash
+      env:
+        EXPORT_PATH: ${{ inputs.export-path }}
+      run: |
+        set -euo pipefail
+        APP_PATH="$(find "$EXPORT_PATH" -maxdepth 2 -name '*.app' -type d | head -n1)"
+        if [ -z "$APP_PATH" ]; then
+          echo "No .app found under $EXPORT_PATH" >&2
+          ls -la "$EXPORT_PATH"
+          exit 1
+        fi
+        echo "app-path=$APP_PATH" >> "$GITHUB_OUTPUT"
+        echo "export-dir=$EXPORT_PATH" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,70 @@
+name: Notarize a macOS Bundle
+description: >
+  Submits a .app, .dmg, .pkg or .zip to Apple's notary service via
+  notarytool, waits for the verdict, and staples the resulting ticket
+  onto the bundle so the system can verify it offline.
+
+  For .app inputs the action wraps the bundle in a transient .zip before
+  submission (notarytool only accepts archives) and staples the ticket
+  back onto the original .app; the transient zip is discarded.
+
+inputs:
+  bundle-path:
+    description: Absolute path to the .app, .dmg, .pkg or .zip to notarize.
+    required: true
+  api-key-path:
+    description: Path to the App Store Connect API .p8 key.
+    required: true
+  api-key-id:
+    description: ASC API Key ID.
+    required: true
+  api-issuer-id:
+    description: ASC API Issuer ID.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Submit to notary and staple
+      shell: bash
+      env:
+        BUNDLE_PATH: ${{ inputs.bundle-path }}
+        API_KEY_PATH: ${{ inputs.api-key-path }}
+        API_KEY_ID: ${{ inputs.api-key-id }}
+        API_ISSUER_ID: ${{ inputs.api-issuer-id }}
+      run: |
+        set -euo pipefail
+        if [ ! -e "$BUNDLE_PATH" ]; then
+          echo "Bundle not found at $BUNDLE_PATH" >&2
+          exit 1
+        fi
+
+        case "$BUNDLE_PATH" in
+          *.app)
+            SUBMIT_PATH="${RUNNER_TEMP}/notarize-$(basename "$BUNDLE_PATH").zip"
+            ditto -c -k --keepParent "$BUNDLE_PATH" "$SUBMIT_PATH"
+            CLEANUP_ZIP="$SUBMIT_PATH"
+            ;;
+          *.dmg|*.pkg|*.zip)
+            SUBMIT_PATH="$BUNDLE_PATH"
+            CLEANUP_ZIP=""
+            ;;
+          *)
+            echo "Unsupported bundle type: $BUNDLE_PATH" >&2
+            exit 1
+            ;;
+        esac
+
+        xcrun notarytool submit "$SUBMIT_PATH" \
+          --key "$API_KEY_PATH" \
+          --key-id "$API_KEY_ID" \
+          --issuer "$API_ISSUER_ID" \
+          --wait
+
+        # Staple onto the original bundle (not the transient zip).
+        xcrun stapler staple "$BUNDLE_PATH"
+        xcrun stapler validate "$BUNDLE_PATH"
+
+        if [ -n "$CLEANUP_ZIP" ]; then
+          rm -f "$CLEANUP_ZIP"
+        fi

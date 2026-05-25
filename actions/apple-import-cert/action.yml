@@ -1,0 +1,56 @@
+name: Import Apple Developer ID Certificate
+description: >
+  Imports a base64-encoded .p12 Developer ID Application certificate into a
+  fresh temporary keychain on the GitHub-hosted macOS runner. The keychain
+  is added to the search list so xcodebuild and codesign pick it up
+  automatically.
+
+inputs:
+  certificate-base64:
+    description: Base64-encoded .p12 file (the secret value, not its name).
+    required: true
+  certificate-password:
+    description: Password the .p12 file is encrypted with.
+    required: true
+  keychain-password:
+    description: >
+      Password for the temporary build keychain this action creates. Any
+      sufficiently random secret will do; nothing reads it back.
+    required: true
+
+outputs:
+  keychain-path:
+    description: Absolute path to the temporary keychain this action created.
+    value: ${{ steps.import.outputs.keychain-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Import certificate into a temporary keychain
+      id: import
+      shell: bash
+      env:
+        CERTIFICATE_BASE64: ${{ inputs.certificate-base64 }}
+        CERTIFICATE_PASSWORD: ${{ inputs.certificate-password }}
+        KEYCHAIN_PASSWORD: ${{ inputs.keychain-password }}
+      run: |
+        set -euo pipefail
+        CERTIFICATE_PATH="$RUNNER_TEMP/build_certificate.p12"
+        KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+
+        echo -n "$CERTIFICATE_BASE64" | base64 --decode -o "$CERTIFICATE_PATH"
+
+        security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+        security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+        security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+        security import "$CERTIFICATE_PATH" \
+          -P "$CERTIFICATE_PASSWORD" \
+          -A -t cert -f pkcs12 \
+          -k "$KEYCHAIN_PATH"
+        security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+        # Sanity check: surface the imported identity so failures here are
+        # diagnosed at import time instead of inside xcodebuild later.
+        security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+        echo "keychain-path=$KEYCHAIN_PATH" >> "$GITHUB_OUTPUT"
