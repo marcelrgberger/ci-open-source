@@ -165,6 +165,7 @@ jobs:
           api-key-id: ${{ steps.asc.outputs.key-id }}
           api-issuer-id: ${{ steps.asc.outputs.issuer-id }}
           keychain-name: ${{ steps.keychain.outputs.keychain-path }}
+          keychain-password: ${{ secrets.keychain-password }}
           readonly: "true"
 
       - name: Resolve Swift packages
