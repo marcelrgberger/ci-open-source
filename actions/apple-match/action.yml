@@ -79,6 +79,23 @@ runs:
         gem install fastlane --version "= 2.230.0" --no-document
         fastlane _2.230.0_ --version
 
+        # Apple API workaround (May 2026): App Store Connect no longer
+        # accepts `DEVELOPER_ID_APPLICATION_G2` as a certificate type
+        # (see fastlane/fastlane#29587). Fastlane still tries G2 as the
+        # first option for `developer_id`; we strip it from the
+        # candidate array so fastlane falls back to the plain
+        # `DEVELOPER_ID_APPLICATION` form Apple still accepts. Remove
+        # this patch once fastlane#29884 (or a successor) lands.
+        GEM_DIR="$(gem environment gemdir)/gems/fastlane-2.230.0"
+        RUNNER_FILE="$GEM_DIR/cert/lib/cert/runner.rb"
+        if [ -f "$RUNNER_FILE" ]; then
+          sed -i.bak '/CertificateType::DEVELOPER_ID_APPLICATION_G2,/d' "$RUNNER_FILE"
+          rm -f "${RUNNER_FILE}.bak"
+          echo "Patched $RUNNER_FILE — G2 candidate removed."
+        else
+          echo "WARN: $RUNNER_FILE not found; G2 workaround skipped."
+        fi
+
     - name: Run fastlane match
       shell: bash
       env:
