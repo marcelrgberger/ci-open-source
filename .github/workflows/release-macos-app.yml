@@ -82,9 +82,6 @@ on:
         type: string
         default: macos-app
     secrets:
-      keychain-password:
-        description: Random secret used as the temporary build keychain password.
-        required: true
       asc-api-key:
         description: Base64-encoded App Store Connect API .p8 key.
         required: true
@@ -143,7 +140,11 @@ jobs:
         id: keychain
         uses: marcelrgberger/ci-open-source/actions/apple-create-keychain@v1
         with:
-          keychain-password: ${{ secrets.keychain-password }}
+          # match installs the cert into this keychain AND uses the same
+          # password as the p12 unlock password (-P flag). Use the
+          # match-password value for both so the inner p12 password
+          # (which match wrote when it stored the cert) matches.
+          keychain-password: ${{ secrets.match-password }}
 
       - name: Materialize ASC API key
         id: asc
@@ -165,7 +166,7 @@ jobs:
           api-key-id: ${{ steps.asc.outputs.key-id }}
           api-issuer-id: ${{ steps.asc.outputs.issuer-id }}
           keychain-name: ${{ steps.keychain.outputs.keychain-path }}
-          keychain-password: ${{ secrets.keychain-password }}
+          keychain-password: ${{ secrets.match-password }}
           readonly: "true"
 
       - name: Resolve Swift packages
