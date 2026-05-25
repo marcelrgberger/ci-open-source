@@ -87,6 +87,27 @@ runs:
         MATCH_READONLY: ${{ inputs.readonly }}
       run: |
         set -euo pipefail
+        # match's `--api_key_path` flag expects a JSON file with the ASC
+        # credentials, not a raw .p8 file (despite the misleading flag
+        # name). Build the JSON form at runtime from the materialized
+        # .p8 and the key/issuer IDs that callers already pass in.
+        MATCH_JSON_PATH="$RUNNER_TEMP/asc_match_key.json"
+        KEY_FILE="$MATCH_API_KEY_PATH" \
+        KEY_ID="$MATCH_API_KEY_ID" \
+        ISSUER_ID="$MATCH_API_ISSUER_ID" \
+        python3 -c '
+        import json, os
+        with open(os.environ["KEY_FILE"]) as f:
+            key_body = f.read()
+        print(json.dumps({
+            "key_id": os.environ["KEY_ID"],
+            "issuer_id": os.environ["ISSUER_ID"],
+            "key": key_body,
+            "in_house": False,
+        }))
+        ' > "$MATCH_JSON_PATH"
+        chmod 600 "$MATCH_JSON_PATH"
+
         # --readonly is the default and load-bearing for CI builds:
         # consumer pipelines must never create or rotate certs/profiles.
         # The bootstrap workflow inside the apple-certificates repo
@@ -103,10 +124,12 @@ runs:
           --git_url "$MATCH_GIT_URL" \
           --app_identifier "$MATCH_APP_IDENTIFIERS" \
           --team_id "$MATCH_TEAM_ID" \
-          --api_key_path "$MATCH_API_KEY_PATH" \
+          --api_key_path "$MATCH_JSON_PATH" \
           --keychain_name "$MATCH_KEYCHAIN_NAME" \
           --skip_docs \
           --verbose
+
+        rm -f "$MATCH_JSON_PATH"
 
     - name: List installed profiles
       shell: bash
